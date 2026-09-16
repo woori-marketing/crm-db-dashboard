@@ -17,6 +17,10 @@ import { findAgentColumn, makeSplitter } from "./roster.mjs";
 // 집계에서 빼는 유입경로. 앞부분이 맞으면 제외한다.
 const EXCLUDE = ["협력점해피콜"];       // 신규 인입이 아니라 기존 고객 확인 전화다
 const UNSET = "미지정";                 // 유입경로가 비어 있거나 엉뚱한 값이 들어간 건
+
+// 화면은 이 문자열을 그대로 찍는다. UTC 로 적으면 새벽 6시 수집이 전날 21시로 보여서,
+// 수집이 안 된 날인지 아닌지를 갱신 시각으로 가릴 수 없게 된다. 한국 시각으로 적는다.
+const nowSeoul = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19);
 // 유입경로가 비어 있는 건은 세지 않는다. 어디서 들어왔는지 알 수 없어 비교에 쓸 수 없다.
 
 // 원본 유입경로 값을 그대로 저장한다. 이름을 묶어 보여주는 일은 화면(template.html)이 한다.
@@ -220,7 +224,7 @@ if (!store.rows.length) {
   process.exit(1);
 }
 
-store.generated = new Date().toISOString().slice(0, 19);
+store.generated = nowSeoul();
 store.excluded = EXCLUDE;
 
 // HTML 은 템플릿의 표시 구간만 갈아끼워 만든다.

@@ -346,6 +346,51 @@ function Test-FileDate([string]$path, [datetime]$day) {
     return (($hit / $body.Count) -ge 0.8)
 }
 
+# 프로그램은 내보내기가 끝났는지 알려주지 않는다. 예전에는 정해진 시간만 기다렸다가
+# 파일이 있기만 하면 넘어갔고, 내보내기가 느린 날에는 앞부분만 써진 파일을 그대로 집계했다.
+# 그래서 파일이 생길 때까지 기다린 뒤, 크기가 더 늘지 않을 때까지 한 번 더 기다린다.
+function Wait-ExportFile([string]$dir, [string]$dest, [datetime]$since, [int]$timeoutSec = 120) {
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+
+    $path = $null
+    while ((Get-Date) -lt $deadline -and -not $path) {
+        if (Test-Path $dest) {
+            $path = $dest
+        } else {
+            # 프로그램이 이름을 제 방식대로 붙일 수 있다. 방금 생긴 CSV 를 찾아 맞춘다.
+            $fresh = Get-ChildItem $dir -File -Filter *.csv -ErrorAction SilentlyContinue |
+                     Where-Object { $_.LastWriteTime -gt $since } |
+                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($fresh) { $path = $fresh.FullName }
+        }
+        if (-not $path) { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $path) { return $null }
+
+    # 크기가 세 번 연속 그대로면 다 써진 것으로 본다.
+    $prev = -1; $stable = 0
+    while ((Get-Date) -lt $deadline) {
+        $item = Get-Item $path -ErrorAction SilentlyContinue
+        if ($item) {
+            if ($item.Length -eq $prev -and $item.Length -gt 0) { $stable++ } else { $stable = 0 }
+            $prev = $item.Length
+            if ($stable -ge 3) { break }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $path
+}
+
+# 받아온 파일에 몇 건이 담겼는지 센다. 상담메모 칸에 줄바꿈이 들어 있어서 줄 수로는 못 센다.
+# Import-Csv 는 따옴표 안의 줄바꿈을 제대로 묶어 준다.
+function Measure-CsvRows([string]$path) {
+    try {
+        $n = @(Import-Csv $path -Encoding Default -ErrorAction Stop).Count
+        if ($n -gt 0) { return $n }
+    } catch { }
+    return [math]::Max(0, @(Get-Content $path -Encoding Default | Where-Object { $_.Trim() }).Count - 1)
+}
+
 # 검색은 서버 왕복이라 걸리는 시간이 일정하지 않다. 고정 대기 대신 건수 라벨이 멈출 때까지 본다.
 function Wait-Search([IntPtr]$win, [int]$timeoutSec = 180) {
     $deadline = (Get-Date).AddSeconds($timeoutSec)
@@ -472,6 +517,7 @@ if ($SkipDateCheck) {
 $ok = 0; $empty = 0; $failed = 0
 $script:DateMode = 2      # 이 프로그램은 칸이 차도 다음 칸으로 넘어가지 않는다. 칸 이동을 직접 준다.
 $script:Flipped = $false
+$script:Truncated = $false   # 내보내기가 덜 끝나서 실패했는지
 
 $day = $Start.Date
 
@@ -552,17 +598,21 @@ while ($day -le $End.Date) {
                 Start-Sleep -Milliseconds 400
             }
 
-            # 프로그램이 이름을 제 방식대로 붙일 수 있다. 없으면 방금 생긴 파일을 찾아 맞춘다.
-            if (-not (Test-Path $dest)) {
-                $fresh = Get-ChildItem $RawRoot -File -Filter *.csv -ErrorAction SilentlyContinue |
-                         Where-Object { $_.LastWriteTime -gt $started } |
-                         Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                if ($fresh) { Move-Item $fresh.FullName $dest -Force }
+            $src = Wait-ExportFile $RawRoot $dest $started
+            if (-not $src) { throw "파일이 만들어지지 않았습니다." }
+            if ($src -ne $dest) { Move-Item $src $dest -Force }
+
+            # 프로그램이 말한 건수와 파일에 실제로 담긴 건수를 맞춰 본다. 이 대조가 없던 동안
+            # 2026-09-15 은 조회 229 건에 파일 69 행이 들어왔는데도 조용히 넘어갔다.
+            $rows = Measure-CsvRows $dest
+            if ($count -gt 0 -and $rows -lt [math]::Floor($count * 0.9)) {
+                Remove-Item $dest -Force -ErrorAction SilentlyContinue
+                $script:Truncated = $true
+                throw "받아온 파일이 $rows 건뿐입니다. 조회는 $count 건이었습니다."
             }
-            if (-not (Test-Path $dest)) { throw "파일이 만들어지지 않았습니다." }
 
             if (Test-FileDate $dest $day) {
-                Write-Log "$stamp 저장 완료 ($count 건)" "Green"
+                Write-Log "$stamp 저장 완료 (조회 $count 건 · 파일 $rows 건)" "Green"
                 $ok++; $done = $true
                 "datecheck=on" | Out-File $StateFile -Encoding ascii
             } else {
@@ -574,8 +624,15 @@ while ($day -le $End.Date) {
             Write-Log "$stamp 시도 $try 실패: $($_.Exception.Message)" "Yellow"
             if (Test-Path $dest) { Remove-Item $dest -Force -ErrorAction SilentlyContinue }
 
+            # 파일이 잘려서 실패한 것이면 조회 조건은 멀쩡하다. 체크박스를 건드리면 오히려
+            # 날짜 조건이 풀려서 엉뚱한 자료를 받는다. 기다리는 시간만 늘려서 다시 한다.
+            if ($script:Truncated) {
+                $script:Truncated = $false
+                $Wait = $Wait * 2
+                Write-Log "  내보내기가 느립니다. 대기를 $Wait 초로 늘려 다시 해봅니다." "Yellow"
+            }
             # 날짜 입력 방식은 바꾸지 않는다. 이 프로그램에서 칸 이동을 주는 방식만 제대로 들어간다.
-            if ($try -eq 1) {
+            elseif ($try -eq 1) {
                 Write-Log "  등록일 체크박스를 뒤집고 다시 해봅니다." "Yellow"
                 try {
                     $c = Switch-Tab $win "Filter"

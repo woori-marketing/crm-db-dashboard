@@ -13,7 +13,7 @@
 
 import { get, put } from "@vercel/blob";
 
-const DEFAULT = { "시흥": 5, "천안": 11 };
+const DEFAULT = { "시흥": 3, "천안": 11 };
 const BRANCHES = Object.keys(DEFAULT);
 const FILE = "headcount.json";
 

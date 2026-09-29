@@ -674,11 +674,12 @@ function aggregate() {
 
   // 그날 받지 못하면 그 데이터는 영영 못 만든다. 나중에 뽑으면 기준이 달라지기 때문이다.
   // 그러니 빠진 날은 조용히 사라지면 안 된다. 0건이 아니라 '미수집' 으로 세워 둔다.
-  // 일요일은 영업을 하지 않으므로 빠진 것이 아니다.
+  // 일요일과 공휴일은 출근을 하지 않으므로 빠진 것이 아니다. 나와서 받은 날은 자료가
+  // 있으니 그대로 남고, 비어 있는 날만 줄에서 빠진다.
   if (GRAIN === "day" && map.size) {
     const had = [...map.keys()].sort();
     for (let d = had[0]; d < had[had.length - 1]; d = shiftDays(d, 1)) {
-      if (dowOf(d) === 0 || map.has(d)) continue;
+      if (dowOf(d) === 0 || HOLIDAYS.has(d) || map.has(d)) continue;
       map.set(d, { parts: Object.fromEntries(names.map(n => [n, 0])), all: {}, sub: {}, br: emptyBranches(), work: 0, dates: new Set(), gap: true });
     }
   }
@@ -1360,7 +1361,7 @@ function render() {
   const present = new Set(days);
   let gaps = 0;
   for (let d = days[0]; d < days[days.length - 1]; d = shiftDays(d, 1))
-    if (dowOf(d) !== 0 && !present.has(d)) gaps++;
+    if (dowOf(d) !== 0 && !HOLIDAYS.has(d) && !present.has(d)) gaps++;
   el("chip-gap").textContent = gaps ? `미수집 ${gaps}일` : "";
   el("chip-gap").hidden = !gaps;
 

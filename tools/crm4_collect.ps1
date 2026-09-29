@@ -505,6 +505,19 @@ if (-not $StateFile) {
 }
 $wasOn = (Test-Path $StateFile) -and ((Get-Content $StateFile -ErrorAction SilentlyContinue) -eq "datecheck=on")
 
+# CRM4 를 껐다 켜면 체크는 풀리는데 적어 둔 값은 그대로 남는다. 그것을 믿으면 날짜 조건
+# 없이 전체를 조회하게 된다. 적어 둔 뒤에 CRM4 가 새로 켜졌으면 풀린 것으로 본다.
+if ($wasOn) {
+    try {
+        if ($proc.StartTime -gt (Get-Item $StateFile).LastWriteTime) {
+            Write-Log "적어 둔 뒤에 CRM4 가 새로 켜졌습니다. 체크가 풀린 것으로 봅니다." "Yellow"
+            $wasOn = $false
+        }
+    } catch {
+        Write-Log "CRM4 가 언제 켜졌는지 알 수 없어 적어 둔 값을 그대로 씁니다." "Yellow"
+    }
+}
+
 if ($SkipDateCheck) {
     Write-Log "등록일 체크박스는 건드리지 않습니다."
 } elseif ($wasOn) {
